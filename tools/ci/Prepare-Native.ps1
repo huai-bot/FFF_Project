@@ -29,7 +29,20 @@ $Pwsh = (Get-Process -Id $PID).Path
 function Invoke-Checked {
     param([string]$Executable, [string[]]$Arguments)
     & $Executable @Arguments
-    if ($LASTEXITCODE -ne 0) { throw "Command failed (exit $LASTEXITCODE): $Executable $($Arguments -join ' ')" }
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        # vcpkg's top-level output names detailed logs but does not print them.
+        if ([IO.Path]::GetFileName($Executable) -eq 'vcpkg.exe') {
+            $detectRoot = Join-Path (Split-Path -Parent $Executable) 'buildtrees\detect_compiler'
+            if (Test-Path -LiteralPath $detectRoot) {
+                foreach ($log in Get-ChildItem -LiteralPath $detectRoot -File -Filter '*fff-x64-static-md*.log') {
+                    Write-Host "Compiler diagnostic: $($log.FullName)"
+                    Get-Content -LiteralPath $log.FullName -Tail 100 | Write-Host
+                }
+            }
+        }
+        throw "Command failed (exit $exitCode): $Executable $($Arguments -join ' ')"
+    }
 }
 function Invoke-Preparation {
     param([string]$Name, [string[]]$Arguments = @())
@@ -222,7 +235,9 @@ if (-not (Test-Prepared $RawRoot $rawKey $rawFiles)) {
     @{ name = 'fff-libraw-ci'; 'version-string' = '1'; 'builtin-baseline' = $VcpkgBaseline;
         dependencies = @('zlib', @{name='libjpeg-turbo'; features=@('jpeg8')}, @{name='lcms'; 'default-features'=$false}) } |
         ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $depsManifest 'vcpkg.json') -Encoding utf8
-    @('set(VCPKG_TARGET_ARCHITECTURE x64)', 'set(VCPKG_CRT_LINKAGE dynamic)', 'set(VCPKG_LIBRARY_LINKAGE static)', 'set(VCPKG_CMAKE_SYSTEM_NAME Windows)', 'set(VCPKG_PLATFORM_TOOLSET v145)', 'set(VCPKG_BUILD_TYPE release)') |
+    # Desktop Windows uses an unset CMAKE_SYSTEM_NAME in vcpkg. The explicit
+    # value "Windows" is not a supported triplet system and loses Windows flags.
+    @('set(VCPKG_TARGET_ARCHITECTURE x64)', 'set(VCPKG_CRT_LINKAGE dynamic)', 'set(VCPKG_LIBRARY_LINKAGE static)', 'set(VCPKG_PLATFORM_TOOLSET v145)', 'set(VCPKG_BUILD_TYPE release)') |
         Set-Content -LiteralPath (Join-Path $triplets 'fff-x64-static-md.cmake') -Encoding ascii
     $depsRoot = Join-Path $WorkDirectory 'libraw-deps-installed'
     Invoke-Checked $Vcpkg @('install', '--triplet=fff-x64-static-md', "--overlay-triplets=$triplets", "--x-manifest-root=$depsManifest", "--x-install-root=$depsRoot")

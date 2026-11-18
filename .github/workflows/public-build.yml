@@ -74,15 +74,18 @@ jobs:
             FFF_Project/third_party/libiamf
             FFF_Project/third_party/vcpkg_installed
             FFF_Project/runtime
-          key: native-v1-windows-v145-${{ hashFiles('FFF_Project/tools/ci/Prepare-Native.ps1', 'FFF_Project/tools/准备*.ps1', 'FFF_Project/tools/Resolve-NativeDependencies.ps1', 'FFF_Project/vcpkg.json', 'FFF_Project/FFF.Native/FFF.Native.vcxproj') }}
+          key: native-v1-windows-v145-${{ hashFiles('FFF_Project/tools/ci/Prepare-Native.ps1', 'FFF_Project/tools/准备*.ps1', 'FFF_Project/tools/Resolve-NativeDependencies.ps1', 'FFF_Project/vcpkg.json', 'FFF_Project/FFF.Native/FFF.Native.vcxproj') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            native-v1-windows-v145-${{ hashFiles('FFF_Project/tools/ci/Prepare-Native.ps1', 'FFF_Project/tools/准备*.ps1', 'FFF_Project/tools/Resolve-NativeDependencies.ps1', 'FFF_Project/vcpkg.json', 'FFF_Project/FFF.Native/FFF.Native.vcxproj') }}-
 
       - name: Prepare pinned native dependencies
         run: ./tools/ci/Prepare-Native.ps1 -Parallel 2
 
-      # Save dependencies before compiling the host so a compiler failure does
-      # not force a complete dependency rebuild next time. Never cache host EXEs.
+      # Preserve completed sub-dependencies even if a later preparation fails.
+      # Each sub-dependency validates its own marker before it is reused.
+      # Unique run keys allow a repaired/partial cache to be saved again.
       - name: Save native dependency cache
-        if: steps.native-cache.outputs.cache-hit != 'true'
+        if: always() && steps.native-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -92,6 +95,18 @@ jobs:
             FFF_Project/third_party/vcpkg_installed
             FFF_Project/runtime
           key: ${{ steps.native-cache.outputs.cache-primary-key }}
+
+      - name: Record native preparation failure details
+        if: failure()
+        run: |
+          $vcpkgRoot = Split-Path -Parent $env:VCPKG_EXE_PATH
+          $logRoot = Join-Path $vcpkgRoot 'buildtrees/detect_compiler'
+          if (Test-Path -LiteralPath $logRoot) {
+            foreach ($log in Get-ChildItem -LiteralPath $logRoot -File -Recurse -Filter '*.log') {
+              Write-Host "--- $($log.FullName) ---"
+              Get-Content -LiteralPath $log.FullName | Select-Object -Last 100
+            }
+          }
 
       - name: Build original player and regression harness
         run: ./tools/构建3FP.ps1 -Configuration Release -NetTFM net11.0-windows -LakeUITfm net11.0-windows10.0.17763.0 -SkipDependencyPreparation
