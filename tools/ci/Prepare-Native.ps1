@@ -24,6 +24,9 @@ $LibRawCmakeCommit = 'eb98e4325aef2ce85d2eb031c2ff18640ca616d3'
 $LibiamfCommit = 'b276f4371a8ae4f370a656e914f7b07e4cd5a2fa'
 $VcpkgBaseline = 'e03dc9b29710050cd1018bc5674688108658d327'
 $ScriptHash = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash
+# Only the unchanged FFmpeg/subtitle/disc preparation from this reviewed version
+# may migrate its marker. Raw/IAMF caches still require the current script hash.
+$LegacyPreparationHash = '00EEB831FE10E0F5A36ECA99F047BCFBC072042462F0329AC16B27497047BC0F'
 $Pwsh = (Get-Process -Id $PID).Path
 
 function Invoke-Checked {
@@ -62,11 +65,18 @@ function Get-PinnedRepository {
     if ($LASTEXITCODE -ne 0 -or $head.Trim() -ne $Commit) { throw "Incorrect source revision in $Directory" }
 }
 function Test-Prepared {
-    param([string]$Root, [string]$Key, [string[]]$Files)
+    param([string]$Root, [string]$Key, [string[]]$Files, [switch]$AllowLegacyScriptKey)
     $marker = Join-Path $Root '.ci-ready.json'
     if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { return $false }
     $record = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
-    if ($record.key -ne $Key) { return $false }
+    if ($record.key -ne $Key) {
+        # Only FFmpeg and subtitle/disc generation are unchanged by the LibRaw
+        # repair. Migrate their old whole-script keys after the same pins and
+        # checked file hashes pass; LibRaw/IAMF never use this compatibility path.
+        $legacySuffix = ([string]$record.key) -replace '^[A-Fa-f0-9]{64}\|', ''
+        $currentSuffix = $Key.Substring($Key.IndexOf('|') + 1)
+        if (-not $AllowLegacyScriptKey -or $legacySuffix -eq $record.key -or $legacySuffix -ne $currentSuffix) { return $false }
+    }
     foreach ($relative in $Files) {
         $file = Join-Path $Root $relative
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $false }
@@ -176,8 +186,13 @@ foreach ($spec in $FfmpegSpecs) {
     $ffmpegFiles += "include\lib$($spec.Name)\$($spec.Name).h"
     $ffmpegFiles += "lib\x64\$($spec.Name)-$($spec.Major).lib"
 }
-$ffmpegKey = "$ScriptHash|$FfmpegHeadersCommit|$FfmpegSha256"
+$ffmpegKey = "ffmpeg-layout-v1|$FfmpegHeadersCommit|$FfmpegSha256"
 $runtimePresent = @(Get-MissingDependencyFiles -Root $Runtime -RelativePaths @($FfmpegSpecs | ForEach-Object { "$($_.Name)-$($_.Major).dll" })).Count -eq 0
+if ($runtimePresent -and (Test-Prepared $FfmpegRoot "$LegacyPreparationHash|$FfmpegHeadersCommit|$FfmpegSha256" $ffmpegFiles)) {
+    Assert-FfmpegRuntime $Runtime
+    Save-Prepared $FfmpegRoot $ffmpegKey $ffmpegFiles
+    Write-Host 'Migrated reviewed FFmpeg cache marker.'
+}
 if ((Test-Prepared $FfmpegRoot $ffmpegKey $ffmpegFiles) -and $runtimePresent) {
     Assert-FfmpegRuntime $Runtime
     Write-Host 'Verified pinned FFmpeg cache.'
@@ -208,8 +223,13 @@ Write-Warning 'This CI uses LGPL FFmpeg: x264/x265 and FDK-AAC are absent; libpl
 
 # Reuse the existing pinned vcpkg manifest for subtitles and disc navigation.
 $vcpkgRoot = Join-Path $ProjectRoot 'third_party\vcpkg_installed\x64-windows'
-$discKey = "$ScriptHash|$VcpkgBaseline|v145|$Configuration"
+$discKey = "subtitle-disc-layout-v1|$VcpkgBaseline|v145|$Configuration"
 $discFiles = @('include\ass\ass.h', 'include\libbluray\bluray.h', 'include\udfread\udfread.h', 'share\libass\copyright', 'share\libbluray\copyright')
+if (Test-Prepared $vcpkgRoot "$LegacyPreparationHash|$VcpkgBaseline|v145|$Configuration" $discFiles) {
+    Initialize-NativeDependencies -ProjectRoot $ProjectRoot -Configuration $Configuration -SkipPreparation -SkipIamf
+    Save-Prepared $vcpkgRoot $discKey $discFiles
+    Write-Host 'Migrated reviewed subtitle/disc cache marker.'
+}
 if (-not (Test-Prepared $vcpkgRoot $discKey $discFiles)) {
     Invoke-Preparation '准备光盘库.ps1'
     Initialize-NativeDependencies -ProjectRoot $ProjectRoot -Configuration $Configuration -SkipPreparation -SkipIamf
@@ -242,6 +262,17 @@ if (-not (Test-Prepared $RawRoot $rawKey $rawFiles)) {
     $depsRoot = Join-Path $WorkDirectory 'libraw-deps-installed'
     Invoke-Checked $Vcpkg @('install', '--triplet=fff-x64-static-md', "--overlay-triplets=$triplets", "--x-manifest-root=$depsManifest", "--x-install-root=$depsRoot")
     $deps = Join-Path $depsRoot 'fff-x64-static-md'
+    # At this pinned baseline zlib 1.3.2 names its Windows static library zs.lib.
+    # The jpeg port renames jpeg-static.lib to jpeg.lib; lcms retains lcms2.lib.
+    $zlibLibrary = Join-Path $deps 'lib\zs.lib'
+    $jpegLibrary = Join-Path $deps 'lib\jpeg.lib'
+    $lcmsLibrary = Join-Path $deps 'lib\lcms2.lib'
+    foreach ($library in @($zlibLibrary, $jpegLibrary, $lcmsLibrary)) {
+        if (-not (Test-Path -LiteralPath $library -PathType Leaf)) {
+            $available = (Get-ChildItem -LiteralPath (Join-Path $deps 'lib') -File -Filter '*.lib').Name -join ', '
+            throw "Pinned static dependency is missing: $library. Available libraries: $available"
+        }
+    }
     $wrapper = Join-Path $WorkDirectory 'libraw-wrapper'
     New-Item -ItemType Directory -Path $wrapper -Force | Out-Null
     @'
@@ -256,9 +287,9 @@ set_target_properties(raw_r PROPERTIES OUTPUT_NAME libraw DEBUG_POSTFIX "")
         '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>DLL', '-DCMAKE_POLICY_VERSION_MINIMUM=3.5',
         '-DBUILD_SHARED_LIBS=ON', '-DENABLE_EXAMPLES=OFF', '-DLIBRAW_INSTALL=OFF', '-DENABLE_X3FTOOLS=ON',
         '-DENABLE_OPENMP=OFF', '-DENABLE_RAWSPEED=OFF', '-DENABLE_JASPER=OFF', '-DENABLE_LCMS=ON',
-        "-DLCMS2_INCLUDE_DIR=$deps\include", "-DLCMS2_LIBRARIES=$deps\lib\lcms2.lib",
-        "-DZLIB_INCLUDE_DIR=$deps\include", "-DZLIB_LIBRARY=$deps\lib\zlib.lib",
-        "-DJPEG_INCLUDE_DIR=$deps\include", "-DJPEG_LIBRARY=$deps\lib\jpeg.lib")
+        "-DLCMS2_INCLUDE_DIR=$deps\include", "-DLCMS2_LIBRARIES=$lcmsLibrary",
+        "-DZLIB_INCLUDE_DIR=$deps\include", "-DZLIB_LIBRARY=$zlibLibrary",
+        "-DJPEG_INCLUDE_DIR=$deps\include", "-DJPEG_LIBRARY=$jpegLibrary")
     Invoke-Checked $Cmake @('--build', $rawBuild, '--config', $Configuration, '--target', 'raw_r', '--parallel', [string]$Parallel)
     $rawBin = Join-Path $rawBuild "upstream\$Configuration"
     foreach ($directory in @('include\libraw', 'lib\x64', 'bin\x64')) { New-Item -ItemType Directory -Path (Join-Path $RawRoot $directory) -Force | Out-Null }
