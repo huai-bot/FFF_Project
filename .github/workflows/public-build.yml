@@ -96,6 +96,9 @@ jobs:
       - name: Build original player and regression harness
         run: ./tools/构建3FP.ps1 -Configuration Release -NetTFM net11.0-windows -LakeUITfm net11.0-windows10.0.17763.0 -SkipDependencyPreparation
 
+      - name: Validate final native deployment
+        run: ./tools/ci/Test-NativeOutput.ps1 -OutputDirectory FFF.Player/bin/Release/net11.0-windows
+
       - name: Run first-frame parsing regression
         run: |
           $ErrorActionPreference = 'Stop'

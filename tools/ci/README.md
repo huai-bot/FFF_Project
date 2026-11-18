@@ -11,7 +11,9 @@ Run **Public original build probe** manually from the Actions tab. It:
 2. Builds a pinned LakeUI revision as a neighboring checkout.
 3. Prepares pinned FFmpeg, LibRaw, subtitle/disc and IAMF dependencies.
 4. Builds the original player and its regression harness in Release mode.
-5. Runs the first-frame event parsing regression and writes an executable hash.
+5. Checks that the final deployment directory can load FFmpeg, LibRaw,
+   subtitle/disc libraries and the native player API, including LibRaw X3F support.
+6. Runs the first-frame event parsing regression and writes an executable hash.
 
 No player executable is uploaded, no release is created, and no automatic
 push/pull-request trigger is configured. Only prepared third-party dependencies
