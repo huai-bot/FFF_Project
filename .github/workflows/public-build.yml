@@ -1,0 +1,118 @@
+name: Public original build probe
+
+# Public phase only: no sponsorship changes and no executable artifacts.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.event.repository.private == false && github.repository_owner == 'huai-bot'
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: FFF_Project
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+      CMAKE_GENERATOR: Visual Studio 18 2026
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+      VCPKG_MAX_CONCURRENCY: '2'
+      VCPKG_BINARY_SOURCES: clear
+    steps:
+      - name: Checkout original-source fork
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: FFF_Project
+          persist-credentials: false
+
+      - name: Install matching .NET SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '11.0.100'
+
+      - name: Setup MSBuild for Visual Studio 2026
+        uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
+        with:
+          vs-version: '[18.0,19.0)'
+
+      - name: Validate toolchain and scripts
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet --info
+          if ($LASTEXITCODE -ne 0) { throw '.NET SDK unavailable' }
+          msbuild -version -nologo
+          if ($LASTEXITCODE -ne 0) { throw 'MSBuild unavailable' }
+          foreach ($script in Get-ChildItem tools/ci -Filter '*.ps1') {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
+          if (-not $env:VCPKG_INSTALLATION_ROOT) { throw 'Runner vcpkg installation is missing' }
+          "VCPKG_EXE_PATH=$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Compile pinned LakeUI dependency
+        run: ./tools/ci/Build-LakeUI.ps1
+
+      - name: Restore native dependency cache
+        id: native-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            FFF_Project/third_party/ffmpeg
+            FFF_Project/third_party/libraw
+            FFF_Project/third_party/libiamf
+            FFF_Project/third_party/vcpkg_installed
+            FFF_Project/runtime
+          key: native-v1-windows-v145-${{ hashFiles('FFF_Project/tools/ci/Prepare-Native.ps1', 'FFF_Project/tools/准备*.ps1', 'FFF_Project/tools/Resolve-NativeDependencies.ps1', 'FFF_Project/vcpkg.json', 'FFF_Project/FFF.Native/FFF.Native.vcxproj') }}
+
+      - name: Prepare pinned native dependencies
+        run: ./tools/ci/Prepare-Native.ps1 -Parallel 2
+
+      # Save dependencies before compiling the host so a compiler failure does
+      # not force a complete dependency rebuild next time. Never cache host EXEs.
+      - name: Save native dependency cache
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            FFF_Project/third_party/ffmpeg
+            FFF_Project/third_party/libraw
+            FFF_Project/third_party/libiamf
+            FFF_Project/third_party/vcpkg_installed
+            FFF_Project/runtime
+          key: ${{ steps.native-cache.outputs.cache-primary-key }}
+
+      - name: Build original player and regression harness
+        run: ./tools/构建3FP.ps1 -Configuration Release -NetTFM net11.0-windows -LakeUITfm net11.0-windows10.0.17763.0 -SkipDependencyPreparation
+
+      - name: Run first-frame parsing regression
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $test = 'FFF.Player.Tests/bin/Release/net11.0-windows/FFF.Player.Tests.exe'
+          if (-not (Test-Path -LiteralPath $test)) { throw 'Regression harness was not produced' }
+          & $test --first-frame-event-regression
+          if ($LASTEXITCODE -ne 0) { throw "Regression failed (exit $LASTEXITCODE)" }
+
+      - name: Record successful build without publishing executables
+        run: |
+          $exe = 'FFF.Player/bin/Release/net11.0-windows/FFF.Player.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'Player executable is missing' }
+          $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+          @"
+          ## Original player build succeeded
+          - Source revision: $env:GITHUB_SHA
+          - Target: Windows x64 / .NET 11
+          - Sponsorship and personalization logic: unchanged
+          - Player SHA256: $hash
+          - Executables are intentionally not uploaded in the public phase.
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
