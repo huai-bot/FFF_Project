@@ -48,8 +48,9 @@ $publishDirectory = Join-Path $lakeUIRoot "LakeUI\bin\Release\$LakeUITfm\$Runtim
 if (-not (Test-Path -LiteralPath $playerProject -PathType Leaf)) {
     throw 'FFF.Player.vbproj was not found relative to this script.'
 }
-$git = (Get-Command git -CommandType Application -ErrorAction Stop).Source
-$dotnet = (Get-Command dotnet -CommandType Application -ErrorAction Stop).Source
+# Runner PATH can contain multiple git/dotnet executables; use the first match.
+$git = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+$dotnet = (Get-Command dotnet -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 $previousGitPrompt = $env:GIT_TERMINAL_PROMPT
 $env:GIT_TERMINAL_PROMPT = '0'
 

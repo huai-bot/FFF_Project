@@ -259,7 +259,7 @@ set_target_properties(raw_r PROPERTIES OUTPUT_NAME libraw DEBUG_POSTFIX "")
     Save-Prepared $RawRoot $rawKey $rawFiles
 }
 $rawDll = Join-Path $RawRoot 'bin\x64\libraw.dll'
-if ([FffCiNativeProbe]::Text($rawDll, 'libraw_version') -ne '0.22.3') { throw 'LibRaw DLL version mismatch.' }
+if ([FffCiNativeProbe]::Text($rawDll, 'libraw_version') -notmatch '^0\.22\.3(?:-Release)?$') { throw 'LibRaw DLL version mismatch.' }
 if (([FffCiNativeProbe]::UInt($rawDll, 'libraw_capabilities') -band 16) -eq 0) { throw 'LibRaw was built without X3F support.' }
 Write-Host 'Verified LibRaw 0.22.3 with X3F support.'
 
