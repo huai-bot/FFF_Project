@@ -77,11 +77,15 @@ jobs:
           key: native-v1-windows-v145-${{ hashFiles('FFF_Project/tools/ci/Prepare-Native.ps1', 'FFF_Project/tools/准备*.ps1', 'FFF_Project/tools/Resolve-NativeDependencies.ps1', 'FFF_Project/vcpkg.json', 'FFF_Project/FFF.Native/FFF.Native.vcxproj') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             native-v1-windows-v145-${{ hashFiles('FFF_Project/tools/ci/Prepare-Native.ps1', 'FFF_Project/tools/准备*.ps1', 'FFF_Project/tools/Resolve-NativeDependencies.ps1', 'FFF_Project/vcpkg.json', 'FFF_Project/FFF.Native/FFF.Native.vcxproj') }}-
+            native-v1-windows-v145-02a7adebae1fa9eb30c0c9ca2c6293470d5adbbd84d373e1e8092f57ac84fcf8-44233690166-1
             native-v1-windows-v145-3252ac277a9cf0597930b406d6b2bec2f2b71e962f8343edd40860e99b2a8087-44230554302-1
             native-v1-windows-v145-
 
       - name: Prepare pinned native dependencies
         run: ./tools/ci/Prepare-Native.ps1 -Parallel 2
+
+      - name: Complete and verify generated FFmpeg headers
+        run: ./tools/ci/Complete-FfmpegHeaders.ps1
 
       # Preserve completed sub-dependencies even if a later preparation fails.
       # Each sub-dependency validates its own marker before it is reused.
